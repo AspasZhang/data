@@ -421,9 +421,11 @@ class EnhancedWorldModel:
         prompt = self._build_generation_prompt(tool_name, tool_request, variant, context, cot, question, output_format, tool_request)
         
         try:
+            # 确保base_url以/v1结尾（兼容各种API服务）
+            api_base = self.api_base.rstrip('/') + '/v1' if not self.api_base.rstrip('/').endswith('/v1') else self.api_base
             client = openai.OpenAI(
                 api_key=self.api_key,
-                base_url=self.api_base
+                base_url=api_base
             )
             
             response = client.chat.completions.create(
@@ -494,8 +496,11 @@ class EnhancedWorldModel:
             _eo = self._parse_enum_options(_et)
             if _eo:
                 constraints.append(f'【枚举】"{_ef}" 只能填: {" / ".join(_eo)}')
-            constraints.append("【禁止】不要添加Output之外的字段")
-            constraints.append('【禁止type字段】响应JSON中绝对不能出现"type"键，这是tool定义的隐性字段，不属于观测数据')
+        
+        # 禁止添加额外字段（移出循环，只添加一次）
+        constraints.append("【禁止】不要添加Output之外的任何字段，只能输出schema定义的字段")
+        constraints.append('【禁止type字段】响应JSON中绝对不能出现"type"键，这是tool定义的隐性字段，不属于观测数据')
+        constraints.append('【类型严格】int类型必须是纯数字不加引号，string类型必须加引号，enum必须从给定选项中选择')
         
         # 已知字段值
         if remembered_fields:

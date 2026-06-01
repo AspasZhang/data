@@ -42,6 +42,31 @@ class Tee:
         sys.stdout = self.terminal
 
 
+# ============ 线程级日志前缀（自动给所有 print 加 [Qx-Ry] 标识） ============
+
+import builtins
+
+_original_print = builtins.print
+_thread_log_ctx = threading.local()
+
+
+def _tagged_print(*args, **kwargs):
+    """替换内置 print，自动为当前线程的输出加上任务标识前缀"""
+    tag = getattr(_thread_log_ctx, 'tag', None)
+    if tag:
+        # 在第一个参数前加 tag；如果是空行(无参数)则只输出换行
+        if args:
+            first = f"{tag} {args[0]}"
+            _original_print(first, *args[1:], **kwargs)
+        else:
+            _original_print(**kwargs)
+    else:
+        _original_print(*args, **kwargs)
+
+
+builtins.print = _tagged_print
+
+
 def load_cot_samples(cot_dir: str = "CoT") -> List[str]:
     """从CoT目录加载所有example和question作为参考样例"""
     samples = []
@@ -99,6 +124,30 @@ def randomize_question(question: str, api_key: str, api_base: str,
         return question
 
 
+# ============ 线程本地存储（每个线程复用一个 generator） ============
+_thread_local = threading.local()
+
+
+def _get_thread_generator(tool_manager, api_key, api_base, max_steps):
+    """获取当前线程的 generator（首次调用时创建，之后复用）"""
+    if not hasattr(_thread_local, 'generator'):
+        # 抑制初始化时的重复打印
+        import io
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            _thread_local.generator = AgentGenerator(
+                tool_manager=tool_manager,
+                api_key=api_key,
+                api_base=api_base,
+                knowledge_base=None,
+                max_steps=max_steps
+            )
+        finally:
+            sys.stdout = old_stdout
+    return _thread_local.generator
+
+
 # ============ 单个任务的 worker 函数 ============
 
 def run_single_task(task: Dict, tool_manager: ToolManager,
@@ -125,24 +174,23 @@ def run_single_task(task: Dict, tool_manager: ToolManager,
 
     start_time = time.time()
 
+    # 设置线程级日志标识，generator 内部所有 print 自动带此前缀
+    _thread_log_ctx.tag = tag
+
     try:
-        # 每个 worker 创建独立的 generator（避免线程间状态冲突）
+        # 获取当前线程的 generator（复用，不重复创建）
+        generator = _get_thread_generator(tool_manager, api_key, api_base, max_steps)
+
+        # 加载该任务对应的知识库
         knowledge_base = None
         if kb_file and os.path.exists(kb_file):
             with open(kb_file, 'r', encoding='utf-8') as f:
                 knowledge_base = json.load(f)
-
-        generator = AgentGenerator(
-            tool_manager=tool_manager,
-            api_key=api_key,
-            api_base=api_base,
-            knowledge_base=knowledge_base,
-            max_steps=max_steps
-        )
+        generator.knowledge_base = knowledge_base
 
         # 用大模型改写问题
         actual_question = randomize_question(question, api_key, api_base, cot_samples)
-        print(f"\n{tag} 📝 实际问题: {actual_question}")
+        print(f"\n📝 实际问题: {actual_question}")
 
         # 生成数据
         result = generator.generate(
@@ -167,12 +215,12 @@ def run_single_task(task: Dict, tool_manager: ToolManager,
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
 
-        print(f"\n{tag} ✅ 完成 (耗时: {elapsed:.1f}秒, 步骤数: {len(result['response'])})")
+        print(f"\n✅ 完成 (耗时: {elapsed:.1f}秒, 步骤数: {len(result['response'])})")
         return {"success": True, "result": result, "task": task, "error": None, "elapsed": elapsed}
 
     except Exception as e:
         elapsed = time.time() - start_time
-        print(f"\n{tag} ❌ 失败: {e}")
+        print(f"\n❌ 失败: {e}")
 
         # 保存错误信息
         error_info = {
@@ -187,6 +235,10 @@ def run_single_task(task: Dict, tool_manager: ToolManager,
             json.dump(error_info, f, ensure_ascii=False, indent=2)
 
         return {"success": False, "result": None, "task": task, "error": str(e), "elapsed": elapsed}
+
+    finally:
+        # 清除线程级日志标识
+        _thread_log_ctx.tag = None
 
 
 # ============ 主批量生成函数 ============
@@ -279,7 +331,7 @@ def batch_generate(
                 'q_output_dir': q_output_dir
             })
 
-    print(f"\n🚀 开始并发执行 {len(tasks)} 个任务...\n")
+    print(f"\n🚀 开始并发执行 {len(tasks)} 个任务（{min(max_workers, len(tasks))} 线程，generator 按需初始化）...\n")
     batch_start = time.time()
 
     # ============ 多线程执行 ============

@@ -34,6 +34,9 @@ class CoTIntegration:
         self.current_cot = None
         self.current_step = None
 
+        # ── 防重复：记录已执行过的 (cot_name, step_id) ──
+        self.visited_nodes = set()
+
         self._load_cot_trees()
 
     def _load_cot_trees(self):
@@ -223,7 +226,39 @@ class CoTIntegration:
         if self.call_stack:
             self.call_stack[-1] = (self.current_cot, self.current_step)
 
+        # ── 防重复：如果新节点已访问过，自动跳过直到找到未访问的节点 ──
+        max_skip = 20  # 防止无限循环
+        skipped = 0
+        while self._is_visited(self.current_cot, self.current_step) and skipped < max_skip:
+            print(f"   ⏭️  跳过已访问节点: {self.current_cot}/{self.current_step}")
+            skip_node = self.get_current_node()
+            if not skip_node:
+                break
+            if skip_node.get('type') == 'terminal':
+                print(f"   ✅ CoT执行完成: {self.current_cot}")
+                self._pop_call_stack()
+                return False
+            skip_next = skip_node.get('next')
+            if not skip_next:
+                self._pop_call_stack()
+                return False
+            self.current_step = skip_next
+            if self.call_stack:
+                self.call_stack[-1] = (self.current_cot, self.current_step)
+            skipped += 1
+
         return True
+
+    def _is_visited(self, cot_name: str, step_id: str) -> bool:
+        """检查节点是否已访问过"""
+        return (cot_name, step_id) in self.visited_nodes
+
+    def mark_visited(self, cot_name: str = None, step_id: str = None):
+        """标记当前节点为已访问"""
+        cot = cot_name or self.current_cot
+        step = step_id or self.current_step
+        if cot and step:
+            self.visited_nodes.add((cot, step))
 
     def handle_cot_call(self, target_cot: str) -> bool:
         """

@@ -441,6 +441,9 @@ class AgentGenerator:
 
             # ============ CoT决策树推进 ============
             if self.cot_integration.is_active():
+                # 标记当前节点为已访问（防止重复执行）
+                self.cot_integration.mark_visited()
+
                 # 检查是否需要调用子CoT
                 should_call, target_cot = self.cot_integration.should_call_subcot()
 

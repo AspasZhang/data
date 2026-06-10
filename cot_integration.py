@@ -238,7 +238,14 @@ class CoTIntegration:
                 print(f"   ✅ CoT执行完成: {self.current_cot}")
                 self._pop_call_stack()
                 return False
-            skip_next = skip_node.get('next')
+            # 根据节点类型决定下一步（修复：condition 类型需走 next_if_true/next_if_false）
+            skip_type = skip_node.get('type', '')
+            if skip_type == 'condition':
+                # 已访问的 condition 节点无法再做判断，默认走 true 路径；
+                # 如果 true 路径也为空则尝试 false 路径
+                skip_next = skip_node.get('next_if_true') or skip_node.get('next_if_false')
+            else:
+                skip_next = skip_node.get('next')
             if not skip_next:
                 self._pop_call_stack()
                 return False

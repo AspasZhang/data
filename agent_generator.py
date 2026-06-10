@@ -277,7 +277,27 @@ class AgentGenerator:
             cot_intent = ""
 
             if self.cot_integration.is_active():
-                node = self.cot_integration.get_current_node()
+                # ── 跳过已访问节点（修复"节点复用"bug）──────────────────
+                # visited 检查原本只在 advance_to_next_step 内部（执行完后前进时），
+                # 导致子CoT重入或条件分支回退时，已visited节点仍会被执行一次。
+                # 现在在获取工具前主动跳过，确保不复用。
+                _skip_count = 0
+                while self.cot_integration.is_active():
+                    _cur_node = self.cot_integration.get_current_node()
+                    if not _cur_node:
+                        break
+                    _node_key = (self.cot_integration.current_cot, self.cot_integration.current_step)
+                    if _node_key not in self.cot_integration.visited_nodes:
+                        break  # 未访问过，可以执行
+                    # 已访问过，跳过
+                    _skip_count += 1
+                    print(f"   ⏭️  跳过已访问节点: {_node_key[0]}/{_node_key[1]}")
+                    if not self.cot_integration.advance_to_next_step():
+                        break  # 无法前进，CoT 结束
+                    if _skip_count > 20:  # 防止死循环
+                        break
+
+                node = self.cot_integration.get_current_node() if self.cot_integration.is_active() else None
                 if node:
                     candidate_tools = self.cot_integration.get_candidate_tools()
                     cot_intent = self.cot_integration.get_node_intent()
